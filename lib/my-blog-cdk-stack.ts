@@ -141,13 +141,13 @@ new ec2.InterfaceVpcEndpoint(this, "LogsEndpoint", {
 });
 
 // SSM VPCエンドポイントを作成
-// new ec2.InterfaceVpcEndpoint(this, "SSMEndpoint2", {
-//   vpc,
-//   service: ec2.InterfaceVpcEndpointAwsService.SSM,
-//   subnets: { subnets: [privateSubnetA] },
-//   securityGroups: [endpointSG],
-//   privateDnsEnabled: true,
-// });
+new ec2.InterfaceVpcEndpoint(this, "SSMEndpoint", {
+  vpc,
+  service: ec2.InterfaceVpcEndpointAwsService.SSM,
+  subnets: { subnets: [privateSubnetA] },
+  securityGroups: [endpointSG],
+  privateDnsEnabled: true,
+});
 
     // RDS インスタンスをスナップショットから復元
     const dbInstance = new rds.DatabaseInstanceFromSnapshot(
