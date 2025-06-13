@@ -83,13 +83,25 @@ export class MyBlogCdkStack extends cdk.Stack {
       "Allow Frontend containers to reach Backend containers on port 8080"
     );
 
+    // my-blog-db-sgをインポート
+    const dbSG = ec2.SecurityGroup.fromSecurityGroupId(
+      this,
+      "ImportedAlbSG",
+      "sg-0c103a71a76c8498e"
+    );
+
+    dbSG.addIngressRule(
+      backendSG,
+      ec2.Port.tcp(5432),
+      "Allow Backend to reach DB on port 5432"
+    );
+
     // VPC Endpoint 用 SG
     const endpointSG = ec2.SecurityGroup.fromSecurityGroupId(
       this,
       "ImportedEndpointSG",
-      "sg-098e0afa63ed3251c" 
+      "sg-098e0afa63ed3251c"
     );
-
 
     // Frontend TG を作成
     const frontendTG = new elbv2.ApplicationTargetGroup(this, "FrontendTG", {
@@ -104,50 +116,50 @@ export class MyBlogCdkStack extends cdk.Stack {
       },
     });
 
-// ECR API VPCエンドポイントを作成
-new ec2.InterfaceVpcEndpoint(this, "EcrApiEndpoint", {
-  vpc,
-  service: new ec2.InterfaceVpcEndpointService(
-    "com.amazonaws.ap-northeast-1.ecr.api",
-    443
-  ),
-  subnets: { subnets: [privateSubnetA] },
-  securityGroups: [endpointSG],
-  privateDnsEnabled: true,
-});
+    // ECR API VPCエンドポイントを作成
+    new ec2.InterfaceVpcEndpoint(this, "EcrApiEndpoint", {
+      vpc,
+      service: new ec2.InterfaceVpcEndpointService(
+        "com.amazonaws.ap-northeast-1.ecr.api",
+        443
+      ),
+      subnets: { subnets: [privateSubnetA] },
+      securityGroups: [endpointSG],
+      privateDnsEnabled: true,
+    });
 
-// ECR DKR VPCエンドポイントを作成
-new ec2.InterfaceVpcEndpoint(this, "EcrDkrEndpoint", {
-  vpc,
-  service: new ec2.InterfaceVpcEndpointService(
-    "com.amazonaws.ap-northeast-1.ecr.dkr",
-    443
-  ),
-  subnets: { subnets: [privateSubnetA] },
-  securityGroups: [endpointSG],
-  privateDnsEnabled: true,
-});
+    // ECR DKR VPCエンドポイントを作成
+    new ec2.InterfaceVpcEndpoint(this, "EcrDkrEndpoint", {
+      vpc,
+      service: new ec2.InterfaceVpcEndpointService(
+        "com.amazonaws.ap-northeast-1.ecr.dkr",
+        443
+      ),
+      subnets: { subnets: [privateSubnetA] },
+      securityGroups: [endpointSG],
+      privateDnsEnabled: true,
+    });
 
-// CloudWatch Logs VPCエンドポイントを作成
-new ec2.InterfaceVpcEndpoint(this, "LogsEndpoint", {
-  vpc,
-  service: new ec2.InterfaceVpcEndpointService(
-    "com.amazonaws.ap-northeast-1.logs",
-    443
-  ),
-  subnets: { subnets: [privateSubnetA] },
-  securityGroups: [endpointSG],
-  privateDnsEnabled: true,
-});
+    // CloudWatch Logs VPCエンドポイントを作成
+    new ec2.InterfaceVpcEndpoint(this, "LogsEndpoint", {
+      vpc,
+      service: new ec2.InterfaceVpcEndpointService(
+        "com.amazonaws.ap-northeast-1.logs",
+        443
+      ),
+      subnets: { subnets: [privateSubnetA] },
+      securityGroups: [endpointSG],
+      privateDnsEnabled: true,
+    });
 
-// SSM VPCエンドポイントを作成
-new ec2.InterfaceVpcEndpoint(this, "SSMEndpoint", {
-  vpc,
-  service: ec2.InterfaceVpcEndpointAwsService.SSM,
-  subnets: { subnets: [privateSubnetA] },
-  securityGroups: [endpointSG],
-  privateDnsEnabled: true,
-});
+    // SSM VPCエンドポイントを作成
+    new ec2.InterfaceVpcEndpoint(this, "SSMEndpoint", {
+      vpc,
+      service: ec2.InterfaceVpcEndpointAwsService.SSM,
+      subnets: { subnets: [privateSubnetA] },
+      securityGroups: [endpointSG],
+      privateDnsEnabled: true,
+    });
 
     // RDS インスタンスをスナップショットから復元
     const dbInstance = new rds.DatabaseInstanceFromSnapshot(
@@ -165,11 +177,12 @@ new ec2.InterfaceVpcEndpoint(this, "SSMEndpoint", {
         ),
         multiAz: false,
         allocatedStorage: 20,
-        publiclyAccessible: false,
+        publiclyAccessible: true,
         vpcSubnets: {
           subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
         },
         deleteAutomatedBackups: true,
+         securityGroups: [dbSG],
       }
     );
     dbInstance.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
@@ -318,7 +331,7 @@ new ec2.InterfaceVpcEndpoint(this, "SSMEndpoint", {
         DB_NAME: ecs.Secret.fromSsmParameter(dbNameParam),
         DB_USER: ecs.Secret.fromSsmParameter(dbUserParam),
         DB_PASSWORD: ecs.Secret.fromSsmParameter(passwordParam),
-        DB_HOST: ecs.Secret.fromSsmParameter(dbHostParam), 
+        DB_HOST: ecs.Secret.fromSsmParameter(dbHostParam),
       },
     });
     backendContainer.addPortMappings({
