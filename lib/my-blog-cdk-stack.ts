@@ -8,6 +8,13 @@ import * as ecr from "aws-cdk-lib/aws-ecr";
 import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
 import * as ssm from "aws-cdk-lib/aws-ssm";
 import * as rds from "aws-cdk-lib/aws-rds";
+import * as logs from "aws-cdk-lib/aws-logs";
+import { aws_lambda as lambda } from "aws-cdk-lib";
+import {
+  AwsCustomResource,
+  AwsCustomResourcePolicy,
+  PhysicalResourceId,
+} from "aws-cdk-lib/custom-resources";
 
 const PREFIX = "my-blog";
 
@@ -45,6 +52,12 @@ export class MyBlogCdkStack extends cdk.Stack {
       this,
       "PrivateSubnetA",
       "subnet-0fa7e7110025d4f73"
+    );
+
+    const privateSubnetC = ec2.Subnet.fromSubnetId(
+      this,
+      "PrivateSubnetC",
+      "subnet-058e941b484972494"
     );
 
     // 既存のセキュリティグループをインポート
@@ -86,7 +99,7 @@ export class MyBlogCdkStack extends cdk.Stack {
     // my-blog-db-sgをインポート
     const dbSG = ec2.SecurityGroup.fromSecurityGroupId(
       this,
-      "ImportedAlbSG",
+      "ImportedDbSG",
       "sg-0c103a71a76c8498e"
     );
 
@@ -123,7 +136,7 @@ export class MyBlogCdkStack extends cdk.Stack {
         "com.amazonaws.ap-northeast-1.ecr.api",
         443
       ),
-      subnets: { subnets: [privateSubnetA] },
+      subnets: { subnets: [privateSubnetA, privateSubnetC] },
       securityGroups: [endpointSG],
       privateDnsEnabled: true,
     });
@@ -135,7 +148,7 @@ export class MyBlogCdkStack extends cdk.Stack {
         "com.amazonaws.ap-northeast-1.ecr.dkr",
         443
       ),
-      subnets: { subnets: [privateSubnetA] },
+      subnets: { subnets: [privateSubnetA, privateSubnetC] },
       securityGroups: [endpointSG],
       privateDnsEnabled: true,
     });
@@ -147,7 +160,7 @@ export class MyBlogCdkStack extends cdk.Stack {
         "com.amazonaws.ap-northeast-1.logs",
         443
       ),
-      subnets: { subnets: [privateSubnetA] },
+      subnets: { subnets: [privateSubnetA, privateSubnetC] },
       securityGroups: [endpointSG],
       privateDnsEnabled: true,
     });
@@ -156,9 +169,19 @@ export class MyBlogCdkStack extends cdk.Stack {
     new ec2.InterfaceVpcEndpoint(this, "SSMEndpoint", {
       vpc,
       service: ec2.InterfaceVpcEndpointAwsService.SSM,
-      subnets: { subnets: [privateSubnetA] },
+      subnets: { subnets: [privateSubnetA, privateSubnetC] },
       securityGroups: [endpointSG],
       privateDnsEnabled: true,
+    });
+
+    //dbのサブネットグループ
+    const subnetGroup = new rds.SubnetGroup(this, "MySubnetGroup", {
+      description: "Subnet group for single AZ RDS",
+      vpc,
+      vpcSubnets: {
+        subnets: [privateSubnetA, privateSubnetC],
+      },
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
     // RDS インスタンスをスナップショットから復元
@@ -177,27 +200,28 @@ export class MyBlogCdkStack extends cdk.Stack {
         ),
         multiAz: false,
         allocatedStorage: 20,
-        publiclyAccessible: true,
+        publiclyAccessible: true, //あとでfalseにする
         vpcSubnets: {
-          subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
+          subnets: [privateSubnetA],
         },
+        subnetGroup,
         deleteAutomatedBackups: true,
-         securityGroups: [dbSG],
+        securityGroups: [dbSG],
       }
     );
     dbInstance.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
-    //パラメータ(DBホスト)を作成 ＊毎回パラメータを書き換える
-    const dbHostParam = new ssm.StringParameter(this, "DbHostWriter", {
-      parameterName: "/my-blog/db/host",
-      stringValue: dbInstance.dbInstanceEndpointAddress,
-      description: "RDS endpoint written from snapshot deployment",
-    });
-
-    dbHostParam.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    //既存のパラメータ(DBホスト) ＊Lamdaで毎回値を書き換えられる
+    const dbHostParam = ssm.StringParameter.fromSecureStringParameterAttributes(
+      this,
+      "ImportedDbHostParam",
+      {
+        parameterName: "/my-blog/db/host",
+      }
+    );
 
     // 既存のパラメータ(DBパスワード)
-    const passwordParam =
+    const dbPasswordParam =
       ssm.StringParameter.fromSecureStringParameterAttributes(
         this,
         "ImportedDbPasswordParam",
@@ -207,18 +231,59 @@ export class MyBlogCdkStack extends cdk.Stack {
       );
 
     // 既存のパラメータ(DBの名前)
-    const dbNameParam = ssm.StringParameter.fromStringParameterName(
+    const dbNameParam = ssm.StringParameter.fromStringParameterAttributes(
       this,
       "ImportedDbNameParam",
-      "/my-blog/db/name"
+      {
+        parameterName: "/my-blog/db/name",
+      }
     );
 
     // 既存のパラメータ(DBのユーザー)
-    const dbUserParam = ssm.StringParameter.fromStringParameterName(
+    const dbUserParam = ssm.StringParameter.fromStringParameterAttributes(
       this,
       "ImportedDbUserParam",
-      "/my-blog/db/user"
+      {
+        parameterName: "/my-blog/db/user",
+      }
     );
+
+    //Lambda(パラメーターのmyblog/db/hostの値を書き換える処理)をインポート
+    const existingFn = lambda.Function.fromFunctionArn(
+      this,
+      "ImportedLambdaFunction",
+      "arn:aws:lambda:ap-northeast-1:047719644594:function:updatedParameter"
+    );
+
+    //Lambdaを実行
+    const crRole = iam.Role.fromRoleArn(
+      this,
+      "ImportedInvokeRole",
+      "arn:aws:iam::047719644594:role/excuteLumbdaRole"
+    );
+
+    const dbHost = dbInstance.dbInstanceEndpointAddress;
+
+    const invoke = new AwsCustomResource(this, "InvokeLambdaToUpdateSSM", {
+      onCreate: {
+        service: "Lambda",
+        action: "invoke",
+        parameters: {
+          FunctionName: existingFn.functionName,
+          Payload: cdk.Stack.of(this).toJsonString({
+            hostname: dbHost,
+          }),
+        },
+        physicalResourceId: PhysicalResourceId.of("UpdateDbHostCustomResource"),
+      },
+      policy: AwsCustomResourcePolicy.fromSdkCalls({
+        resources: AwsCustomResourcePolicy.ANY_RESOURCE,
+      }),
+      role: crRole,
+    });
+
+    // DBインスタンスの構築が終わるまで待つように指定
+    invoke.node.addDependency(dbInstance);
 
     //フロントエンドと接続するALBを作成
     const alb = new elbv2.ApplicationLoadBalancer(this, "MyBlogALB", {
@@ -278,40 +343,16 @@ export class MyBlogCdkStack extends cdk.Stack {
       "arn:aws:iam::047719644594:role/ecsTaskExecutionRole"
     );
 
-    // Frontend タスク定義
-    const frontendTaskDef = new ecs.FargateTaskDefinition(
-      this,
-      "FrontendTaskDef",
-      {
-        family: "my-blog-frontend-taskdef",
-        cpu: 512,
-        memoryLimitMiB: 1024,
-        executionRole,
-      }
-    );
 
-    const frontendContainer = frontendTaskDef.addContainer(
-      "FrontendContainer",
-      {
-        image: ecs.ContainerImage.fromEcrRepository(frontendRepo, "latest"),
-        logging: ecs.LogDrivers.awsLogs({
-          streamPrefix: `${PREFIX}-frontend`,
-        }),
-        environment: {
-          NEXT_PUBLIC_API: process.env.NEXT_PUBLIC_API!,
-          API_URL: process.env.API_URL!,
-        },
-      }
-    );
-    // Frontend ポートマッピング
-    frontendContainer.addPortMappings({
-      name: "frontend",
-      containerPort: 3000,
-      protocol: ecs.Protocol.TCP,
-      appProtocol: ecs.AppProtocol.http,
+        //バックエンドのロググループ作成
+    const backendLogGroup = new logs.LogGroup(this, "BackendLogGroup", {
+      logGroupName: "/ecs/my-blog-backend",
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      retention: logs.RetentionDays.ONE_WEEK,
     });
 
-    // Backend タスク定義
+
+        // Backend タスク定義
     const backendTaskDef = new ecs.FargateTaskDefinition(
       this,
       "BackendTaskDef",
@@ -326,36 +367,22 @@ export class MyBlogCdkStack extends cdk.Stack {
       image: ecs.ContainerImage.fromEcrRepository(backendRepo, "latest"),
       logging: ecs.LogDrivers.awsLogs({
         streamPrefix: `${PREFIX}-backend`,
+        logGroup: backendLogGroup,
       }),
       secrets: {
         DB_NAME: ecs.Secret.fromSsmParameter(dbNameParam),
         DB_USER: ecs.Secret.fromSsmParameter(dbUserParam),
-        DB_PASSWORD: ecs.Secret.fromSsmParameter(passwordParam),
+        DB_PASSWORD: ecs.Secret.fromSsmParameter(dbPasswordParam),
         DB_HOST: ecs.Secret.fromSsmParameter(dbHostParam),
       },
     });
+
     backendContainer.addPortMappings({
       name: "backend",
       containerPort: 8080,
       protocol: ecs.Protocol.TCP,
       appProtocol: ecs.AppProtocol.http,
     });
-
-    const frontendService = new ecs.FargateService(this, "FrontendService", {
-      serviceName: `${PREFIX}-frontend-service`,
-      cluster,
-      taskDefinition: frontendTaskDef,
-      desiredCount: 1,
-      assignPublicIp: false,
-      vpcSubnets: { subnets: [privateSubnetA] },
-      securityGroups: [frontendSG],
-      serviceConnectConfiguration: {
-        namespace: "my-blog-cluster",
-      },
-    });
-
-    // Frontend TG にサービス登録 (port 3000)
-    frontendTG.addTarget(frontendService);
 
     //backendのサービス作成
     const backendService = new ecs.FargateService(this, "BackendService", {
@@ -376,5 +403,73 @@ export class MyBlogCdkStack extends cdk.Stack {
         ],
       },
     });
+
+    //Lambda(パラメーターのmyblog/db/hostの値を書き換える処理)の実行が完了されてから構築されるよう依存関係を指定
+    backendService.node.addDependency(invoke);
+
+    //フロントエンドのロググループ作成
+    const frontendLogGroup = new logs.LogGroup(this, "FrontendLogGroup", {
+      logGroupName: "/ecs/my-blog-frontend",
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      retention: logs.RetentionDays.ONE_WEEK,
+    });
+
+
+
+        // Frontend タスク定義
+    const frontendTaskDef = new ecs.FargateTaskDefinition(
+      this,
+      "FrontendTaskDef",
+      {
+        family: "my-blog-frontend-taskdef",
+        cpu: 512,
+        memoryLimitMiB: 1024,
+        executionRole,
+      }
+    );
+
+    const frontendContainer = frontendTaskDef.addContainer(
+      "FrontendContainer",
+      {
+        image: ecs.ContainerImage.fromEcrRepository(frontendRepo, "latest"),
+        logging: ecs.LogDrivers.awsLogs({
+          streamPrefix: `${PREFIX}-frontend`,
+          logGroup: frontendLogGroup,
+        }),
+        environment: {
+          NEXT_PUBLIC_API: process.env.NEXT_PUBLIC_API!,
+          API_URL: process.env.API_URL!,
+        },
+      }
+    );
+
+
+
+    // Frontend ポートマッピング
+    frontendContainer.addPortMappings({
+      name: "frontend",
+      containerPort: 3000,
+      protocol: ecs.Protocol.TCP,
+      appProtocol: ecs.AppProtocol.http,
+    });
+
+    const frontendService = new ecs.FargateService(this, "FrontendService", {
+      serviceName: `${PREFIX}-frontend-service`,
+      cluster,
+      taskDefinition: frontendTaskDef,
+      desiredCount: 1,
+      assignPublicIp: false,
+      vpcSubnets: { subnets: [privateSubnetA] },
+      securityGroups: [frontendSG],
+      serviceConnectConfiguration: {
+        namespace: "my-blog-cluster",
+      },
+    });
+    //バックエンドが作成されてから起動するよう依存関係を指定
+    frontendService.node.addDependency(backendService);
+
+
+    // Frontend TG にサービス登録 (port 3000)
+    frontendTG.addTarget(frontendService);
   }
 }
