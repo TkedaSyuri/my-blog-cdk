@@ -7,6 +7,18 @@ phases:
     commands:
       - npm install -g aws-cdk
       - npm ci
+
   build:
     commands:
-      - cdk deploy --require-approval never
+      # 差分チェック
+      - echo "Checking for CDK diff..."
+      - cdk diff > diff.log || true
+
+      # デプロイするか判定（差分が含まれるか？）
+      - |
+        if grep -q 'Stack' diff.log; then
+          echo "Changes detected. Deploying..."
+          cdk deploy --require-approval never
+        else
+          echo "No changes detected. Skipping deploy."
+        fi
