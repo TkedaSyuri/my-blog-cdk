@@ -1,3 +1,4 @@
+# buildspec.yml
 version: 0.2
 
 phases:
@@ -7,18 +8,15 @@ phases:
     commands:
       - npm install -g aws-cdk
       - npm ci
-
   build:
     commands:
-      # 差分チェック
-      - echo "Checking for CDK diff..."
-      - cdk diff > diff.log || true
-
-      # デプロイするか判定（差分が含まれるか？）
+      # スタックの状態を確認
+      - STACK_NAME=MyBlogCdkStack
+      - STATUS=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --query "Stacks[0].StackStatus" --output text || echo "NOT_FOUND")
       - |
-        if grep -q 'Stack' diff.log; then
-          echo "Changes detected. Deploying..."
-          cdk deploy --require-approval never
+        if [[ "$STATUS" == "CREATE_COMPLETE" || "$STATUS" == "UPDATE_COMPLETE" ]]; then
+          echo "Stack already exists and is stable. Skipping cdk deploy."
         else
-          echo "No changes detected. Skipping deploy."
+          echo "Deploying CDK stack..."
+          cdk deploy --require-approval never
         fi
