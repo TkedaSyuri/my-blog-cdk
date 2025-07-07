@@ -6,6 +6,9 @@ import * as iam from "aws-cdk-lib/aws-iam";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as ecr from "aws-cdk-lib/aws-ecr";
 import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
+import * as route53 from "aws-cdk-lib/aws-route53";
+import * as targets from "aws-cdk-lib/aws-route53-targets";
+import * as certificatemanager from "aws-cdk-lib/aws-certificatemanager";
 import * as ssm from "aws-cdk-lib/aws-ssm";
 import * as rds from "aws-cdk-lib/aws-rds";
 import * as logs from "aws-cdk-lib/aws-logs";
@@ -285,18 +288,29 @@ export class MyBlogCdkStack extends cdk.Stack {
     // DBインスタンスの構築が終わるまで待つように指定
     invoke.node.addDependency(dbInstance);
 
+    //既存のACMの証明書をインポート
+    const certArn =
+      "arn:aws:acm:ap-northeast-1:047719644594:certificate/f50988de-ae1d-4553-8579-b548d78c99be";
+    const certificate = certificatemanager.Certificate.fromCertificateArn(
+      this,
+      "BlogCert",
+      certArn
+    );
+
     //フロントエンドと接続するALBを作成
     const alb = new elbv2.ApplicationLoadBalancer(this, "MyBlogALB", {
-      loadBalancerName: `${PREFIX}-alb`,
       vpc,
       internetFacing: true,
       vpcSubnets: { subnets: [publicSubnetA, publicSubnetC] },
+      loadBalancerName: `${PREFIX}-alb`,
     });
-
+    //albのリスナー
     const listener = alb.addListener("HttpListener", {
-      port: 80,
+      port: 443,
+      certificates: [certificate],
       open: true,
     });
+
     listener.addTargetGroups("AttachFrontendTG", {
       targetGroups: [frontendTG],
     });
@@ -307,7 +321,18 @@ export class MyBlogCdkStack extends cdk.Stack {
       conditions: [elbv2.ListenerCondition.pathPatterns(["/*"])],
       action: elbv2.ListenerAction.forward([frontendTG]),
     });
-
+    // 4. Route53のホストゾーンから取得し、エイリアスAレコード作成
+    const hostedZone = route53.HostedZone.fromLookup(this, "BlogHostedZone", {
+      domainName: "syuri-takeda.jp",
+    });
+    new route53.ARecord(this, "BlogAliasRecord", {
+      zone: hostedZone,
+      recordName: "blog", // => blog.syuri-takeda.jp
+      target: route53.RecordTarget.fromAlias(
+        new targets.LoadBalancerTarget(alb)
+      ),
+    });
+    //名前空間をインポート
     const myBlogNamespace =
       servicediscovery.PrivateDnsNamespace.fromPrivateDnsNamespaceAttributes(
         this,
@@ -319,6 +344,7 @@ export class MyBlogCdkStack extends cdk.Stack {
             "arn:aws:servicediscovery:ap-northeast-1:047719644594:namespace/ns-ll72yudx435py4o3",
         }
       );
+
     // 既存 ECR リポジトリをインポート
     const frontendRepo = ecr.Repository.fromRepositoryName(
       this,
@@ -343,16 +369,14 @@ export class MyBlogCdkStack extends cdk.Stack {
       "arn:aws:iam::047719644594:role/ecsTaskExecutionRole"
     );
 
-
-        //バックエンドのロググループ作成
+    //バックエンドのロググループ作成
     const backendLogGroup = new logs.LogGroup(this, "BackendLogGroup", {
       logGroupName: "/ecs/my-blog-backend",
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       retention: logs.RetentionDays.ONE_WEEK,
     });
 
-
-        // Backend タスク定義
+    // Backend タスク定義
     const backendTaskDef = new ecs.FargateTaskDefinition(
       this,
       "BackendTaskDef",
@@ -414,9 +438,7 @@ export class MyBlogCdkStack extends cdk.Stack {
       retention: logs.RetentionDays.ONE_WEEK,
     });
 
-
-
-        // Frontend タスク定義
+    // Frontend タスク定義
     const frontendTaskDef = new ecs.FargateTaskDefinition(
       this,
       "FrontendTaskDef",
@@ -443,8 +465,6 @@ export class MyBlogCdkStack extends cdk.Stack {
       }
     );
 
-
-
     // Frontend ポートマッピング
     frontendContainer.addPortMappings({
       name: "frontend",
@@ -467,7 +487,6 @@ export class MyBlogCdkStack extends cdk.Stack {
     });
     //バックエンドが作成されてから起動するよう依存関係を指定
     frontendService.node.addDependency(backendService);
-
 
     // Frontend TG にサービス登録 (port 3000)
     frontendTG.addTarget(frontendService);
