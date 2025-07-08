@@ -453,7 +453,7 @@ export class MyBlogCdkStack extends cdk.Stack {
     const frontendContainer = frontendTaskDef.addContainer(
       "FrontendContainer",
       {
-        image: ecs.ContainerImage.fromEcrRepository(frontendRepo, "latest"),
+        image: ecs.ContainerImage.fromEcrRepository(frontendRepo, "v1"),
         logging: ecs.LogDrivers.awsLogs({
           streamPrefix: `${PREFIX}-frontend`,
           logGroup: frontendLogGroup,
