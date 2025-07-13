@@ -234,7 +234,7 @@ export class MyBlogCdkStack extends cdk.Stack {
       );
 
     // 既存のパラメータ(DBの名前)
-    const dbNameParam = ssm.StringParameter.fromStringParameterAttributes(
+    const dbNameParam = ssm.StringParameter.fromSecureStringParameterAttributes(
       this,
       "ImportedDbNameParam",
       {
@@ -243,7 +243,7 @@ export class MyBlogCdkStack extends cdk.Stack {
     );
 
     // 既存のパラメータ(DBのユーザー)
-    const dbUserParam = ssm.StringParameter.fromStringParameterAttributes(
+    const dbUserParam = ssm.StringParameter.fromSecureStringParameterAttributes(
       this,
       "ImportedDbUserParam",
       {
