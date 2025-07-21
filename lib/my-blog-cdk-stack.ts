@@ -250,6 +250,14 @@ export class MyBlogCdkStack extends cdk.Stack {
         parameterName: "/my-blog/db/user",
       }
     );
+    // 既存のパラメータ(DBのsecret-key-base)
+    const dbSecretKeyBaseParam = ssm.StringParameter.fromSecureStringParameterAttributes(
+      this,
+      "ImportedDbSecretKeyBaseParam",
+      {
+        parameterName: "/my-blog/db/secret-key-base",
+      }
+    );
 
     //Lambda(パラメーターのmyblog/db/hostの値を書き換える処理)をインポート
     const existingFn = lambda.Function.fromFunctionArn(
@@ -398,6 +406,7 @@ export class MyBlogCdkStack extends cdk.Stack {
         DB_USER: ecs.Secret.fromSsmParameter(dbUserParam),
         DB_PASSWORD: ecs.Secret.fromSsmParameter(dbPasswordParam),
         DB_HOST: ecs.Secret.fromSsmParameter(dbHostParam),
+        SECRET_KEY_BASE: ecs.Secret.fromSsmParameter(dbSecretKeyBaseParam)
       },
     });
 
@@ -453,13 +462,12 @@ export class MyBlogCdkStack extends cdk.Stack {
     const frontendContainer = frontendTaskDef.addContainer(
       "FrontendContainer",
       {
-        image: ecs.ContainerImage.fromEcrRepository(frontendRepo, "v1"),
+        image: ecs.ContainerImage.fromEcrRepository(frontendRepo, "latest"),
         logging: ecs.LogDrivers.awsLogs({
           streamPrefix: `${PREFIX}-frontend`,
           logGroup: frontendLogGroup,
         }),
         environment: {
-          NEXT_PUBLIC_API: process.env.NEXT_PUBLIC_API!,
           API_URL: process.env.API_URL!,
         },
       }
